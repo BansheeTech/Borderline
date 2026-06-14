@@ -1,5 +1,9 @@
 # Borderline
 
+<p align="center">
+  <img src="img/Borderline.png" alt="Borderline" />
+</p>
+
 A Claude Code plugin that **delegates to the Gemini CLI** (`gemini`) the boring,
 mechanical, low-risk tasks where Gemini is just as reliable as Claude: bulk
 translations and **i18n**, trivial style/color changes, repetitive renames and
