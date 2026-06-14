@@ -29,11 +29,11 @@ Design decisions (set in this build):
 - Claude Code running with **`--dangerously-skip-permissions`**, so the pipeline is
   transparent and doesn't prompt for confirmation on every call.
 
-## Installation (as a local marketplace)
+## Installation
 
 ```bash
 # In Claude Code:
-/plugin marketplace add /Users/bansheetechnologiess.l./Desktop/Borderline
+/plugin marketplace add BansheeTech/Borderline
 /plugin install borderline@borderline-marketplace
 ```
 
