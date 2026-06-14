@@ -1,0 +1,16 @@
+{
+  "name": "borderline-marketplace",
+  "owner": {
+    "name": "Banshee Devs",
+    "email": "banshee.devs@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "borderline",
+      "source": "./",
+      "description": "Delegate boring, low-risk tasks to Gemini CLI. A transparent Claude <> Gemini pipeline.",
+      "version": "0.1.0",
+      "author": { "name": "Banshee Devs" }
+    }
+  ]
+}
