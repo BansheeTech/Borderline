@@ -1,12 +1,12 @@
 {
   "name": "borderline",
   "displayName": "Borderline",
-  "version": "0.1.0",
-  "description": "Delegate boring, mechanical, low-risk tasks to Gemini CLI (bulk translations/i18n, trivial style/color changes, repetitive renames and replacements), always reviewing the result. A transparent Claude <> Gemini pipeline.",
+  "version": "0.2.0",
+  "description": "Delegate boring, mechanical, low-risk tasks to the Antigravity CLI (agy) (bulk translations/i18n, trivial style/color changes, repetitive renames and replacements), always reviewing the result. A transparent Claude <> agy pipeline.",
   "author": {
     "name": "Banshee Devs",
     "email": "banshee.devs@gmail.com"
   },
-  "keywords": ["gemini", "delegation", "i18n", "translation", "automation", "pipeline"],
+  "keywords": ["agy", "antigravity", "gemini", "delegation", "i18n", "translation", "automation", "pipeline"],
   "license": "MIT"
 }

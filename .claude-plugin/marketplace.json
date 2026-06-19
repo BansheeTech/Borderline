@@ -8,8 +8,8 @@
     {
       "name": "borderline",
       "source": "./",
-      "description": "Delegate boring, low-risk tasks to Gemini CLI. A transparent Claude <> Gemini pipeline.",
-      "version": "0.1.0",
+      "description": "Delegate boring, low-risk tasks to the Antigravity CLI (agy). A transparent Claude <> agy pipeline.",
+      "version": "0.2.0",
       "author": { "name": "Banshee Devs" }
     }
   ]
