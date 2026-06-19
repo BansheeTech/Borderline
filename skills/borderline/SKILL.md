@@ -21,10 +21,13 @@ always tell the user what you delegated, in which mode, and what you reviewed.
 > for permission on every step, so Claude must run with `--dangerously-skip-permissions`.
 > Otherwise every call prompts for confirmation and the pipeline stops being transparent.
 
-> **`agy` is agentic.** Left alone it scans the repository and "explores for context"
-> before doing anything — slow and useless for the mechanical tasks we delegate. The
-> wrapper (`delegate.sh`) injects a strict preamble that forbids that exploration, so
-> agy does the concrete task and nothing more. **Always go through the wrapper.**
+> **`agy` is agentic — and the fix is structural.** Left alone, agy takes the current
+> directory as its workspace and **explores it** (lists files, reads README, opens scripts)
+> before answering, even with a concrete prompt and even when told not to. Each read is a
+> request against agy's rate-limit, so a context-free translation ends up scanning the repo
+> and burning quota. The wrapper (`delegate.sh`) defeats this by **running agy from an empty
+> scratch directory in `--text`**: no workspace → nothing to scan → no divagation, no wasted
+> requests. **Always go through the wrapper.**
 
 ## 1. Is it a *borderline* task? (classify first)
 
@@ -46,14 +49,14 @@ When in doubt, **don't delegate**: do it yourself.
 
 | Mode | When | What it does |
 |------|------|--------------|
-| `--text` | **Small / context-free** work (one color, one string, a batch of strings to translate) | agy uses **no tools** and **only returns text**; you apply it with Edit/Write |
-| `--edit` | **Bulk** file work (mass i18n across files, replacements across many files) | agy reads and **writes** the named files itself (`--dangerously-skip-permissions`), scoped to those files |
+| `--text` | **Small / context-free** work (one color, one string, a batch of strings to translate) | runs agy from an **empty scratch dir** so it can't scan the repo; **returns text only**, you apply it with Edit/Write |
+| `--edit` | **Bulk** file work (mass i18n across files, replacements across many files) | runs agy in the repo; it reads and **writes** the named files itself, scoped to those files |
 
-**Prefer `--text` for translations.** Instead of pointing agy at repo files (which is
-exactly what triggers its agentic scanning), **paste the source content inline** in the
-prompt and ask for the translated output only — then Claude writes the file. This is
-faster, cheaper, and avoids divagation entirely. Reach for `--edit` only when the volume
-of files makes inlining impractical.
+**Prefer `--text` for translations.** Don't point agy at repo files — that's exactly what
+triggers its agentic scanning and burns the rate-limit. **Paste the source content inline**
+in the prompt, ask for the translated output only, and let Claude write the file. Because
+`--text` runs agy from an empty directory, divagation is structurally impossible. Reach for
+`--edit` only when the volume of files makes inlining impractical.
 
 ## 3. Run the delegation
 
@@ -84,8 +87,18 @@ Rules when building the prompt for agy:
   to operate only on those files.
 
 Tunables (env vars, optional): `BORDERLINE_MODEL` (default `Gemini 3.5 Flash (High)`),
-`BORDERLINE_TIMEOUT` (default `4m`), `BORDERLINE_CLI` (default `agy`),
-`BORDERLINE_TEXT_SKIP_PERMS=1` (auto-approve in `--text` too, if a pure-text task ever hangs).
+`BORDERLINE_TIMEOUT` (default `2m`), `BORDERLINE_CLI` (default `agy`),
+`BORDERLINE_THROTTLE_MS` (sleep before the call; set `3000`–`5000` for batch i18n).
+
+### Rate-limit (read before batch jobs)
+
+agy rate-limits by request **frequency**, and the throttle is **silent**: no 429, no message —
+the call just **hangs to the timeout and returns empty**. The wrapper detects "empty at
+timeout" and prints a `borderline: … SILENT RATE-LIMIT …` line so you can tell it apart from a
+real hang. When you see it: **do not hammer-retry** (worsens it), **do not kill calls
+mid-flight** (counts against quota), let agy **rest several minutes**, then send **one** call.
+For batches, set `BORDERLINE_THROTTLE_MS=3000`–`5000` and prefer **one big `--text` batch** over
+many small calls. Healthy calls return in ~8–17 s regardless of size.
 
 ## 4. ALWAYS review (non-negotiable)
 
@@ -115,9 +128,10 @@ Example: *"Delegated to agy (--edit mode) the translation of 142 keys into
   install would be useless. Just hand the user the URL and ask them to install it **and sign
   in**, then retry: **https://antigravity.google/product/antigravity-cli** . (Override the
   binary with `BORDERLINE_CLI` if it lives elsewhere.)
-- agy hangs / `Error: timed out waiting for response` → usually multiple concurrent `agy`
-  sessions contending, or a task that isn't truly context-free trying to use a tool in
-  `--text`. Run one delegation at a time; for `--text` make sure the source is inline; or
-  use `--edit` if the task genuinely needs file access.
-- agy starts exploring/auditing the repo → the wrapper wasn't used. Always go through
-  `delegate.sh`; its preamble is what suppresses the agentic exploration.
+- `borderline: agy returned EMPTY …` / hang to timeout → **silent rate-limit** (see the
+  Rate-limit section). Stop, let agy rest minutes, send one call. Don't retry-storm or kill
+  calls. Run one delegation at a time.
+- agy starts exploring/auditing the repo → either the wrapper wasn't used, or you used
+  `--edit` (which runs in the repo) for something that should have been `--text`. For
+  context-free work always use `--text` — it runs agy from an empty dir so there's nothing
+  to scan.

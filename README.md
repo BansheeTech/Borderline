@@ -17,15 +17,21 @@ Claude stays reserved for what needs judgment.
   auto-activates when it detects a borderline task.
 - **`/borderline <task>` command**: explicit manual delegation.
 - **`scripts/delegate.sh`**: a wrapper around `agy` with two modes:
-  - `--edit` → agy works in the repo (`agy --print --dangerously-skip-permissions -p`),
-    reading and writing the named files. For bulk work (mass i18n).
-  - `--text` → agy only returns text (`agy --print -p`, no tools), never
-    touching files; Claude applies the result. Preferred for translations (inline the
-    source) and small changes.
+  - `--text` → runs agy from an **empty scratch directory** and returns text only; Claude
+    applies the result. Preferred for translations (inline the source) and small changes.
+  - `--edit` → runs agy in the repo, reading and writing the named files. For bulk work.
 
-Because `agy` is **agentic** — it scans the repo and "explores for context" by default —
-the wrapper injects a strict preamble that forbids that exploration, so agy does the
-concrete task instead of divagating. Always go through `delegate.sh`.
+Because `agy` is **agentic** — it takes the working directory as its workspace and scans it
+("reads the README", lists files, opens scripts) before answering, even with a concrete
+prompt — the real fix is structural: `--text` runs agy from an **empty directory**, so there
+is no workspace to explore and no rate-limit quota wasted on it. Each of those exploratory
+reads is a request against agy's limit, which is why divagation also exhausts the quota.
+Always go through `delegate.sh`.
+
+The wrapper also flags agy's **silent rate-limit** (agy throttles by request frequency and
+hangs to the timeout returning empty instead of a 429): it detects "empty at timeout" and
+tells you it's likely throttled. Don't hammer-retry or kill calls mid-flight — both make it
+worse; for batch i18n, space calls with `BORDERLINE_THROTTLE_MS=3000`–`5000`.
 
 Design decisions (set in this build):
 - **Hybrid** by task: agy edits in bulk / returns text for small things.
