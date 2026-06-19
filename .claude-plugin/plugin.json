@@ -1,7 +1,7 @@
 {
   "name": "borderline",
   "displayName": "Borderline",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Delegate boring, mechanical, low-risk tasks to the Antigravity CLI (agy) (bulk translations/i18n, trivial style/color changes, repetitive renames and replacements), always reviewing the result. A transparent Claude <> agy pipeline.",
   "author": {
     "name": "Banshee Devs",

@@ -213,13 +213,21 @@ AGY_PID=$!
     sleep 2
     kill -KILL "${AGY_PID}" 2>/dev/null || true
   fi
-) &
+) </dev/null >/dev/null 2>&1 &
+# CRITICAL: detach the watchdog from our std streams (</dev/null >/dev/null 2>&1).
+# Otherwise the subshell — and the `sleep` it spawns — inherit our stdout/stderr, and
+# if the caller reads us through a PIPE (the Bash tool, `$(...)`, `| cat`, Node spawn)
+# that reader blocks on EOF until the orphaned sleep finally ends ~HARD_SECS later,
+# stalling every call. Same writer-FD-held-open trap we already avoid on stdin.
 WATCH_PID=$!
 
 rc=0
 wait "${AGY_PID}" 2>/dev/null || rc=$?
 
 # Stop the watchdog so we don't linger until HARD_SECS on a fast, healthy call.
+# kill -TERM hits only the subshell; the `sleep` it is blocked in is a separate child
+# that would be orphaned and keep running, so kill its children first.
+pkill -P "${WATCH_PID}" 2>/dev/null || true
 kill -TERM "${WATCH_PID}" 2>/dev/null || true
 wait "${WATCH_PID}" 2>/dev/null || true
 
