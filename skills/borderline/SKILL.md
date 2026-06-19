@@ -29,6 +29,20 @@ always tell the user what you delegated, in which mode, and what you reviewed.
 > scratch directory in `--text`**: no workspace → nothing to scan → no divagation, no wasted
 > requests. **Always go through the wrapper.**
 
+> **Long context "just works" — pass big prompts on stdin, not as an argument.** A command
+> line is capped by the OS (`ARG_MAX`, ~1 MB on macOS). The old wrapper handed the whole
+> prompt to `agy -p "<prompt>"`, so a large i18n batch or a long document blew that ceiling
+> and the call **failed or hung** ("Argument list too long", mis-reported as a rate-limit).
+> The wrapper now **streams the prompt to `agy --print` on stdin**, which has no size limit.
+> For content so large it can't even fit on `delegate.sh`'s own command line, **write it to a
+> temp file and pass `@/path/to/file`** (or pipe it and pass `-`); the wrapper reads the file
+> and streams it in. A 1.3 MB prompt that is impossible via `-p` goes through cleanly this way.
+
+> **A stuck call always returns control.** agy's own `--print-timeout` bounds the model wait
+> but **not** input ingestion or a silent rate-limit stall, so it can hang far past it. The
+> wrapper adds a **hard wall-clock watchdog** (`--print-timeout` + 30 s): if agy overruns, it
+> is killed and you get a `borderline: HARD TIMEOUT …` line instead of an indefinite hang.
+
 ## 1. Is it a *borderline* task? (classify first)
 
 **DO delegate** — mechanical, repetitive, verifiable at a glance:
@@ -78,6 +92,17 @@ Always call the wrapper (it centralizes flags, the anti-exploration preamble, mo
 "${CLAUDE_PLUGIN_ROOT}/scripts/delegate.sh" --text "Give me only the hex of a blue 20% darker than #3B82F6. Reply with the value only."
 ```
 
+```bash
+# LARGE content (big i18n batch, long document): don't inline it on the command line —
+# write it to a temp file (Write tool) and pass the path with '@'. No size limit.
+"${CLAUDE_PLUGIN_ROOT}/scripts/delegate.sh" --text @/tmp/borderline-batch.txt
+```
+
+For long prompts, **always prefer `@file`** (write the source + instructions to a temp file,
+pass its path). Inlining a very large prompt as a quoted argument can exceed the shell's
+`ARG_MAX` and fail before the script even runs; `@file` (and `-` for stdin) sidestep that
+entirely and stream the content to agy on stdin.
+
 Rules when building the prompt for agy:
 - Be **explicit and scoped**: exact files (in `--edit`), output format, what NOT to touch
   (placeholders `{var}`, `%s`, tags, keys, ordering).
@@ -93,12 +118,15 @@ Tunables (env vars, optional): `BORDERLINE_MODEL` (default `Gemini 3.5 Flash (Hi
 ### Rate-limit (read before batch jobs)
 
 agy rate-limits by request **frequency**, and the throttle is **silent**: no 429, no message —
-the call just **hangs to the timeout and returns empty**. The wrapper detects "empty at
-timeout" and prints a `borderline: … SILENT RATE-LIMIT …` line so you can tell it apart from a
-real hang. When you see it: **do not hammer-retry** (worsens it), **do not kill calls
-mid-flight** (counts against quota), let agy **rest several minutes**, then send **one** call.
-For batches, set `BORDERLINE_THROTTLE_MS=3000`–`5000` and prefer **one big `--text` batch** over
-many small calls. Healthy calls return in ~8–17 s regardless of size.
+the call just **hangs and returns empty**. The wrapper bounds this two ways: agy's own
+`--print-timeout`, and a **hard wall-clock watchdog** (`--print-timeout` + 30 s) that kills agy
+if it overruns, so the call can never hang the agent indefinitely. You'll see either
+`borderline: HARD TIMEOUT …` (agy had to be killed) or `borderline: agy returned EMPTY …`
+(agy gave up on its own) — both mean the same thing: **a silent rate-limit**. When you see it:
+**do not hammer-retry** (worsens it), **do not run calls concurrently** (frequency is what
+triggers the block), let agy **rest several minutes**, then send **one** call. For batches, set
+`BORDERLINE_THROTTLE_MS=3000`–`5000` and prefer **one big `--text` batch** over many small
+calls. Healthy calls return in ~4–17 s regardless of size.
 
 ## 4. ALWAYS review (non-negotiable)
 
@@ -128,9 +156,12 @@ Example: *"Delegated to agy (--edit mode) the translation of 142 keys into
   install would be useless. Just hand the user the URL and ask them to install it **and sign
   in**, then retry: **https://antigravity.google/product/antigravity-cli** . (Override the
   binary with `BORDERLINE_CLI` if it lives elsewhere.)
-- `borderline: agy returned EMPTY …` / hang to timeout → **silent rate-limit** (see the
-  Rate-limit section). Stop, let agy rest minutes, send one call. Don't retry-storm or kill
-  calls. Run one delegation at a time.
+- `borderline: agy returned EMPTY …` or `borderline: HARD TIMEOUT …` → **silent rate-limit**
+  (see the Rate-limit section). Stop, let agy rest minutes, send one call. Don't retry-storm or
+  run calls concurrently. Run one delegation at a time.
+- `Argument list too long` → the prompt exceeded the shell's `ARG_MAX` as an inline argument.
+  Don't inline huge prompts: write the content to a temp file and pass `@/path/to/file` (the
+  wrapper streams it to agy on stdin, which has no size limit).
 - agy starts exploring/auditing the repo → either the wrapper wasn't used, or you used
   `--edit` (which runs in the repo) for something that should have been `--text`. For
   context-free work always use `--text` — it runs agy from an empty dir so there's nothing

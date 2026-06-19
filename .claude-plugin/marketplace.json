@@ -9,7 +9,7 @@
       "name": "borderline",
       "source": "./",
       "description": "Delegate boring, low-risk tasks to the Antigravity CLI (agy). A transparent Claude <> agy pipeline.",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "author": { "name": "Banshee Devs" }
     }
   ]

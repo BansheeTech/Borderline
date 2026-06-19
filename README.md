@@ -28,10 +28,19 @@ is no workspace to explore and no rate-limit quota wasted on it. Each of those e
 reads is a request against agy's limit, which is why divagation also exhausts the quota.
 Always go through `delegate.sh`.
 
-The wrapper also flags agy's **silent rate-limit** (agy throttles by request frequency and
-hangs to the timeout returning empty instead of a 429): it detects "empty at timeout" and
-tells you it's likely throttled. Don't hammer-retry or kill calls mid-flight — both make it
-worse; for batch i18n, space calls with `BORDERLINE_THROTTLE_MS=3000`–`5000`.
+**Long context works regardless of size.** The wrapper streams the prompt to `agy --print`
+on **stdin**, never as a `-p` argument — so a large i18n batch or long document can't blow the
+shell's `ARG_MAX` ceiling (the old "Argument list too long" / silent hang on long prompts).
+For content too large to even fit on `delegate.sh`'s own command line, write it to a temp file
+and pass `--text @/path/to/file` (or pipe it and pass `-`); a 1.3 MB prompt that is impossible
+via `-p` goes through cleanly.
+
+The wrapper also bounds agy's **silent rate-limit** (agy throttles by request frequency and
+hangs returning empty instead of a 429). agy's own `--print-timeout` doesn't always fire on
+this stall, so the wrapper adds a **hard wall-clock watchdog** (`--print-timeout` + 30 s) that
+kills a stuck call and prints `borderline: HARD TIMEOUT …` — the agent never hangs forever.
+Don't hammer-retry or run calls concurrently — both make throttling worse; for batch i18n,
+space calls with `BORDERLINE_THROTTLE_MS=3000`–`5000`.
 
 Design decisions (set in this build):
 - **Hybrid** by task: agy edits in bulk / returns text for small things.

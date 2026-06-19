@@ -14,6 +14,9 @@ Steps:
    (agy writes the named files itself).
 3. **Run** the wrapper with an explicit, scoped prompt:
    `"${CLAUDE_PLUGIN_ROOT}/scripts/delegate.sh" --edit|--text "<prompt for agy>"`
+   For a **large** prompt (big i18n batch, long document), don't inline it — write it to a temp
+   file and pass the path: `… --text @/tmp/borderline-batch.txt`. Inlining a huge prompt can
+   exceed the shell's `ARG_MAX` and fail; `@file` streams it to agy on stdin with no size limit.
 4. **ALWAYS review** the result: diff (or Read if not git), placeholders/keys intact,
    and lint/build if they exist. If something fails, fix it or re-delegate.
 5. **Report**: what you delegated, in which mode, what changed and what you verified.

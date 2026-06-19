@@ -2,10 +2,29 @@
 # Borderline — delegate a task to the Antigravity CLI (agy) in a transparent way.
 #
 # Usage:
-#   delegate.sh --text "<prompt>"   # agy returns text only; you (Claude) apply it
-#   delegate.sh --edit "<prompt>"   # agy edits the named files itself, tightly scoped
+#   delegate.sh --text "<prompt>"     # agy returns text only; you (Claude) apply it
+#   delegate.sh --edit "<prompt>"     # agy edits the named files itself, tightly scoped
+#   delegate.sh --text @/path/to/file # read the prompt from a file (no argv size limit)
+#   delegate.sh --text -              # read the prompt from STDIN  (no argv size limit)
 #
 # Default mode: --text.
+#
+# WHY @file / - EXIST: the command line itself is bounded by ARG_MAX (~1 MB on macOS).
+# A prompt big enough to cross it can't even reach this script as an argument — the
+# shell refuses with "Argument list too long" before the script runs. For genuinely
+# large content (big i18n batches, long documents), write it to a temp file and pass
+# `@that-file` (tiny argv), or pipe it on stdin with `-`. delegate.sh then streams the
+# whole thing to agy on stdin, which has no size ceiling.
+#
+# THE PROMPT GOES IN ON STDIN — never as a -p argument.
+#   A command-line argument is bounded by the OS ARG_MAX (~1 MB on macOS). The moment
+#   the prompt (preamble + your text) crosses that ceiling, the kernel refuses to exec
+#   agy at all: "Argument list too long". That is the "it hangs / fails on long
+#   context" bug — a big i18n batch or a long document silently blows the argv limit,
+#   and the old code then mis-reported the empty result as a rate-limit. STDIN has no
+#   such ceiling: a 1.3 MB prompt that is impossible to pass via -p streams in fine.
+#   So we ALWAYS pipe the prompt to `agy --print` on stdin (no -p). This is also how
+#   the prompt was effectively fed before — large contexts "just work" again.
 #
 # THE KEY INSIGHT — run agy from an EMPTY directory.
 #   agy is agentic: it takes the current working directory as its "workspace" and
@@ -23,10 +42,13 @@
 # returns chatter instead of the result. So both modes auto-approve; in --text the
 # empty scratch dir is what guarantees it can't touch your files.
 #
-# agy's rate-limit is SILENT: it throttles by request frequency and HANGS to the
-# timeout returning empty instead of a 429. This wrapper flags "empty at timeout"
-# so you can tell a throttle apart from a real hang. Do not hammer-retry or kill
-# calls mid-flight — both make the block worse.
+# agy's rate-limit is SILENT: it throttles by request frequency and HANGS instead of
+# returning a 429. Worse, agy's own --print-timeout does NOT always fire on this hang
+# (it bounds the model-wait, not input ingestion), so the call can hang far past it.
+# This wrapper therefore enforces its own HARD wall-clock watchdog: if agy overruns
+# the timeout (plus a grace margin) it is killed and we return control instead of
+# hanging forever. "Empty at timeout" is flagged so you can tell a throttle apart
+# from a real hang. Do not hammer-retry or run calls concurrently — both make it worse.
 #
 # Output convention: agy's result goes to stdout. Markers ('>>> borderline ...')
 # and diagnostics go to stderr so Claude can separate result from noise.
@@ -57,6 +79,18 @@ if [[ -z "${PROMPT}" ]]; then
   exit 2
 fi
 
+# Accept the prompt from a file (@path) or stdin (-) so content larger than ARG_MAX
+# can get through — passing it as a literal argument would fail before this runs.
+if [[ "${PROMPT}" == "-" ]]; then
+  PROMPT="$(cat)"
+elif [[ "${PROMPT}" == @* && -r "${PROMPT#@}" ]]; then
+  PROMPT="$(cat -- "${PROMPT#@}")"
+fi
+if [[ -z "${PROMPT}" ]]; then
+  echo "borderline: prompt resolved to empty (check the @file path or stdin)." >&2
+  exit 2
+fi
+
 if ! command -v "${CLI}" >/dev/null 2>&1; then
   echo "borderline: '${CLI}' is not installed or not on the PATH." >&2
   echo "borderline: ask the USER to install the Antigravity CLI and sign in — it can't be" >&2
@@ -65,6 +99,21 @@ if ! command -v "${CLI}" >/dev/null 2>&1; then
   echo "borderline: (override the binary with BORDERLINE_CLI if it lives elsewhere)." >&2
   exit 127
 fi
+
+# Parse a duration ("90s", "2m", "1h", or bare seconds) into whole seconds.
+to_seconds() {
+  local t="${1:-}"
+  if [[ "${t}" =~ ^([0-9]+)([smh]?)$ ]]; then
+    local n="${BASH_REMATCH[1]}" unit="${BASH_REMATCH[2]}"
+    case "${unit}" in
+      h) echo $(( n * 3600 )) ;;
+      m) echo $(( n * 60 )) ;;
+      *) echo "${n}" ;;
+    esac
+  else
+    echo 120
+  fi
+}
 
 # Defense-in-depth preambles (the empty scratch dir is the real guard for --text).
 read -r -d '' TEXT_PREAMBLE <<'EOF' || true
@@ -91,7 +140,19 @@ EOF
 
 # Where agy runs decides whether it divagates. --text → empty scratch dir; --edit → repo.
 SCRATCH=""
-cleanup() { [[ -n "${SCRATCH}" ]] && rm -rf "${SCRATCH}"; }
+OUT_FILE=""
+WD_FLAG=""
+PROMPT_FILE=""
+cleanup() {
+  cd / 2>/dev/null || true
+  [[ -n "${OUT_FILE}" ]] && rm -f "${OUT_FILE}"
+  [[ -n "${WD_FLAG}" ]] && rm -f "${WD_FLAG}"
+  [[ -n "${PROMPT_FILE}" ]] && rm -f "${PROMPT_FILE}"
+  [[ -n "${SCRATCH}" ]] && rm -rf "${SCRATCH}"
+  # MUST end on success: an EXIT trap whose last command fails (e.g. the [[ -n ]]
+  # test above when a var is empty) clobbers the script's real exit code in bash 3.2.
+  return 0
+}
 trap cleanup EXIT
 
 if [[ "${MODE}" == "edit" ]]; then
@@ -104,7 +165,12 @@ else
 fi
 
 echo ">>> borderline → ${CLI}  [mode: ${MODE}]  [model: ${MODEL}]  [timeout: ${TIMEOUT}]  rundir: ${RUNDIR}" >&2
-echo ">>> task: ${PROMPT}" >&2
+# Preview the task without dumping a huge prompt to stderr.
+if [[ "${#PROMPT}" -gt 280 ]]; then
+  echo ">>> task (${#PROMPT} chars): ${PROMPT:0:280}…" >&2
+else
+  echo ">>> task: ${PROMPT}" >&2
+fi
 
 if [[ "${THROTTLE_MS}" -gt 0 ]]; then
   echo ">>> borderline: throttling ${THROTTLE_MS}ms before call (rate-limit avoidance)" >&2
@@ -112,30 +178,105 @@ if [[ "${THROTTLE_MS}" -gt 0 ]]; then
   sleep "$(printf '%d.%03d' "$(( THROTTLE_MS / 1000 ))" "$(( THROTTLE_MS % 1000 ))")"
 fi
 
-# Run agy from RUNDIR. Capture stdout (the result); let stderr (logs) flow as noise.
+# Hard wall-clock guard. agy's --print-timeout bounds the model wait but NOT input
+# ingestion / a silent rate-limit hang, so we add our own backstop slightly longer
+# than --print-timeout: normally --print-timeout fires first (clean), and this only
+# fires when agy is genuinely stuck — guaranteeing the wrapper returns control.
+HARD_SECS=$(( $(to_seconds "${TIMEOUT}") + 30 ))
+OUT_FILE="$(mktemp -t borderline-out.XXXXXX)"
+WD_FLAG="$(mktemp -t borderline-wd.XXXXXX)"
+rm -f "${WD_FLAG}"   # absent = watchdog has not fired; present = it killed agy
+
+# Stage the full prompt (preamble + task) in a file and feed it to agy by REDIRECTING
+# stdin from that file — not through a `printf | agy` pipe. A redirected regular file
+# gives agy a clean EOF the instant it finishes reading; a pipe can leave a writer FD
+# open in a child (the watchdog) and stall a reader that waits for EOF. Stdin also has
+# no ARG_MAX ceiling, so arbitrarily long prompts get through (the whole point of -p
+# being gone). stdout (the result) → OUT_FILE; stderr (agy's logs) flows through.
+PROMPT_FILE="$(mktemp -t borderline-prompt.XXXXXX)"
+printf '%s\n%s\n' "${PREAMBLE}" "${PROMPT}" > "${PROMPT_FILE}"
+
+cd "${RUNDIR}"
+"${CLI}" --print --dangerously-skip-permissions \
+    --model "${MODEL}" --print-timeout "${TIMEOUT}" \
+    <"${PROMPT_FILE}" >"${OUT_FILE}" &
+AGY_PID=$!
+
+(
+  # Watchdog: sleep, then kill agy if it is still alive past the hard deadline.
+  # Touch WD_FLAG *before* killing so the parent can reliably tell a timeout-kill
+  # apart from a normal empty return (no race with the TERM→KILL grace window).
+  sleep "${HARD_SECS}"
+  if kill -0 "${AGY_PID}" 2>/dev/null; then
+    : > "${WD_FLAG}"
+    kill -TERM "${AGY_PID}" 2>/dev/null || true
+    sleep 2
+    kill -KILL "${AGY_PID}" 2>/dev/null || true
+  fi
+) &
+WATCH_PID=$!
+
 rc=0
-RESULT="$( cd "${RUNDIR}" && "${CLI}" --print --dangerously-skip-permissions \
-  --model "${MODEL}" --print-timeout "${TIMEOUT}" \
-  -p "${PREAMBLE}
-${PROMPT}" )" || rc=$?
+wait "${AGY_PID}" 2>/dev/null || rc=$?
+
+# Stop the watchdog so we don't linger until HARD_SECS on a fast, healthy call.
+kill -TERM "${WATCH_PID}" 2>/dev/null || true
+wait "${WATCH_PID}" 2>/dev/null || true
+
+KILLED_BY_WATCHDOG=0
+[[ -f "${WD_FLAG}" ]] && KILLED_BY_WATCHDOG=1
+
+RESULT="$(cat "${OUT_FILE}" 2>/dev/null || true)"
 
 printf '%s' "${RESULT}"
 [[ -n "${RESULT}" ]] && printf '\n'
 
+# A watchdog kill is an unambiguous failure in BOTH modes — agy was genuinely stuck.
+if [[ "${KILLED_BY_WATCHDOG}" -eq 1 ]]; then
+  {
+    echo "borderline: HARD TIMEOUT after ${HARD_SECS}s — agy did not return and was killed."
+    echo "borderline: agy's own --print-timeout (${TIMEOUT}) did not fire, which points to a"
+    echo "borderline: SILENT RATE-LIMIT or an input-ingestion stall, not a crash. Do NOT"
+    echo "borderline: hammer-retry (worsens the block) and do NOT run calls concurrently. Let"
+    echo "borderline: agy REST several minutes, then send ONE call. For batch i18n, set"
+    echo "borderline: BORDERLINE_THROTTLE_MS=3000–5000 and prefer one big --text batch."
+  } >&2
+  exit 124
+fi
+
+if [[ "${MODE}" == "edit" ]]; then
+  # In --edit, agy writes the files; its stdout is often empty and its exit code in
+  # print mode is unreliable (it can report non-zero even after a correct edit). The
+  # mandatory diff review is the real gate, so don't hard-fail on those — just surface
+  # a note and let Claude confirm by reviewing the diff.
+  if [[ "${rc}" -ne 0 ]]; then
+    echo "borderline: agy reported exit ${rc} in --edit mode — often spurious when it still" >&2
+    echo "borderline: made the edits. REVIEW THE DIFF to confirm the change before trusting it." >&2
+  fi
+  exit 0
+fi
+
+# --text: a usable result must be a clean exit AND non-empty output.
 if [[ "${rc}" -eq 0 && -n "${RESULT}" ]]; then
   exit 0
 fi
 
 if [[ -z "${RESULT}" ]]; then
   {
-    echo "borderline: agy returned EMPTY after ${TIMEOUT} (exit ${rc})."
+    echo "borderline: agy returned EMPTY (exit ${rc})."
     echo "borderline: this is almost always a SILENT RATE-LIMIT — agy throttles by request"
-    echo "borderline: frequency and HANGS instead of returning a 429. Do NOT hammer-retry"
-    echo "borderline: (it worsens the block) and do NOT kill calls mid-flight (counts against"
-    echo "borderline: quota). Let agy REST several minutes, then send ONE call. For batch i18n,"
-    echo "borderline: set BORDERLINE_THROTTLE_MS=3000–5000 and prefer one big --text batch."
+    echo "borderline: frequency and returns nothing instead of a 429. Do NOT hammer-retry"
+    echo "borderline: (it worsens the block) and do NOT run calls concurrently. Let agy REST"
+    echo "borderline: several minutes, then send ONE call. For batch i18n, set"
+    echo "borderline: BORDERLINE_THROTTLE_MS=3000–5000 and prefer one big --text batch."
   } >&2
 else
   echo "borderline: agy exited ${rc} with the output above; review before trusting it." >&2
 fi
-exit "${rc:-1}"
+# Empty --text output is unusable even if agy exited 0 (a silent rate-limit can return
+# nothing with a 0 status), so always fail non-zero here so the caller doesn't mistake
+# an empty result for success.
+if [[ "${rc}" -eq 0 ]]; then
+  exit 1
+fi
+exit "${rc}"
